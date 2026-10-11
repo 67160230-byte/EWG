@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { Activity, ArrowDownLeft, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, ChevronLeft, ChevronRight, CircleHelp, ClipboardList, Coffee, CreditCard, Download, Eye, EyeOff, FileImage, Flame, LayoutDashboard, Leaf, LogOut, Menu, MoreHorizontal, Package, Plus, Search, Settings, ShoppingBag, ShoppingCart, Sparkles, TrendingDown, TrendingUp, Upload, Wallet, X } from "lucide-react";
+import { Activity, ArrowDownLeft, ArrowUpRight, Bell, Boxes, ChartNoAxesCombined, ChevronDown, ChevronRight, CircleHelp, ClipboardList, Coffee, CreditCard, Database, Download, Eye, EyeOff, FileImage, LayoutDashboard, Leaf, LogOut, Menu, MoreHorizontal, Package, Plus, Search, Settings, ShoppingBag, ShoppingCart, Sparkles, TrendingDown, TrendingUp, Wallet, X } from "lucide-react";
 
 type Product = { id: string; name: string; category: string; price: number; cost: number; stock: number; unit: string; image?: string; color: string };
 type Sale = { id: string; product: string; productId?: string; qty: number; total: number; date: string };
@@ -29,11 +29,37 @@ const seed: StoreData = {
 };
 const money = (n: number) => new Intl.NumberFormat("th-TH", { maximumFractionDigits: 0 }).format(n);
 const today = () => new Date().toISOString().slice(0, 10);
+type StorageMode = "loading" | "local" | "cloud" | "error";
+
+function readSavedStore(): StoreData | null {
+  try {
+    const value = localStorage.getItem("ewg_store_v1");
+    return value ? JSON.parse(value) as StoreData : null;
+  } catch { return null; }
+}
+
+async function migrateInlineImages(store: StoreData): Promise<StoreData> {
+  const products = await Promise.all(store.products.map(async product => {
+    if (!product.image?.startsWith("data:image/")) return product;
+    const [header, encoded] = product.image.split(",", 2);
+    const mime = header.match(/^data:(image\/(?:jpeg|png|webp));base64$/)?.[1];
+    if (!mime || !encoded) throw new Error("พบรูปเดิมที่มีรูปแบบไม่รองรับ");
+    const bytes = Uint8Array.from(atob(encoded), c => c.charCodeAt(0));
+    const form = new FormData();
+    form.append("file", new File([bytes], `product-${product.id}`, { type: mime }));
+    const response = await fetch("/api/store/image", { method: "POST", body: form });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "ย้ายรูปสินค้าไปคลาวด์ไม่สำเร็จ");
+    return { ...product, image: result.url as string };
+  }));
+  return { ...store, products };
+}
 
 export default function Home() {
   const [authenticated, setAuthenticated] = useState(false);
   const [checking, setChecking] = useState(true);
   const [data, setData] = useState<StoreData>(seed);
+  const [storageMode, setStorageMode] = useState<StorageMode>("loading");
   const [section, setSection] = useState<Section>("overview");
   const [search, setSearch] = useState("");
   const [modal, setModal] = useState<"product" | "sale" | "expense" | null>(null);
@@ -41,11 +67,57 @@ export default function Home() {
   const [toast, setToast] = useState("");
 
   useEffect(() => {
-    fetch("/api/auth/session").then(r => r.json()).then(s => setAuthenticated(s.authenticated)).catch(() => {}).finally(() => setChecking(false));
-    const saved = localStorage.getItem("khumflow_store_v1");
-    if (saved) { try { setData(JSON.parse(saved) as StoreData); } catch { localStorage.removeItem("khumflow_store_v1"); } }
+    let active = true;
+    const saved = readSavedStore();
+    fetch("/api/auth/session").then(r => r.json()).then(s => {
+      if (!active) return;
+      setAuthenticated(Boolean(s.authenticated));
+      if (!s.authenticated) { setData(saved || seed); setStorageMode("local"); }
+    }).catch(() => {
+      if (active) { setData(saved || seed); setStorageMode("local"); }
+    }).finally(() => { if (active) setChecking(false); });
+    return () => { active = false; };
   }, []);
-  useEffect(() => { if (!checking) localStorage.setItem("khumflow_store_v1", JSON.stringify(data)); }, [data, checking]);
+  useEffect(() => {
+    if (checking || !authenticated) return;
+    let active = true;
+    (async () => {
+      try {
+        const response = await fetch("/api/store");
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.error || "เชื่อมฐานข้อมูลไม่ได้");
+        if (!result.configured) {
+          if (active) { setData(readSavedStore() || seed); setStorageMode("local"); }
+          return;
+        }
+        const existing = result.store as StoreData | null;
+        const selected = existing || readSavedStore() || seed;
+        const migrated = existing ? existing : await migrateInlineImages(selected);
+        if (active) { setData(migrated); setStorageMode("cloud"); }
+      } catch (error) {
+        if (active) { setData(readSavedStore() || seed); setStorageMode("error"); setToast(error instanceof Error ? error.message : "เชื่อมฐานข้อมูลไม่ได้"); }
+      }
+    })();
+    return () => { active = false; };
+  }, [authenticated, checking]);
+  useEffect(() => {
+    if (checking || storageMode === "loading" || storageMode === "error") return;
+    if (storageMode === "local") {
+      localStorage.setItem("ewg_store_v1", JSON.stringify(data));
+      return;
+    }
+    if (!authenticated) return;
+    const timer = setTimeout(async () => {
+      try {
+        const response = await fetch("/api/store", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(data) });
+        if (!response.ok) { const result = await response.json(); throw new Error(result.error || "บันทึกข้อมูลออนไลน์ไม่สำเร็จ"); }
+      } catch (error) {
+        setStorageMode("error");
+        setToast(error instanceof Error ? error.message : "บันทึกข้อมูลออนไลน์ไม่สำเร็จ");
+      }
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [data, storageMode, authenticated, checking]);
   useEffect(() => { if (!toast) return; const timer = setTimeout(() => setToast(""), 2600); return () => clearTimeout(timer); }, [toast]);
 
   const todaySales = useMemo(() => data.sales.filter(s => s.date.slice(0, 10) === today()).reduce((a, s) => a + s.total, 0), [data.sales]);
@@ -66,32 +138,32 @@ export default function Home() {
 
   return <div className="app-shell">
     <aside className={`sidebar ${mobileOpen ? "sidebar-open" : ""}`}>
-      <a className="brand" href="#"><span className="brand-mark"><Leaf size={21}/></span><span>Khum<span className="brand-light">Flow</span><small>STORE MANAGEMENT</small></span></a>
+      <a className="brand" href="#"><span className="brand-mark"><Leaf size={21}/></span><span>EWG<small>STORE MANAGEMENT</small></span></a>
       <div className="store-switch"><span className="store-avatar">K</span><span className="store-copy"><b>ร้านกาแฟของฉัน</b><small>แพ็กเกจทดลองใช้งาน</small></span><ChevronDown size={16}/></div>
       <p className="nav-caption">เมนูหลัก</p>
       <nav className="side-nav">{navItems.map(item => <button key={item.id} className={section === item.id ? "nav-active" : ""} onClick={() => { setSection(item.id); setMobileOpen(false); setSearch(""); }}><item.icon size={19}/><span>{item.label}</span>{item.id === "inventory" && lowStock > 0 && <i>{lowStock}</i>}</button>)}</nav>
-      <div className="sidebar-bottom"><div className="help-card"><div className="help-icon"><Sparkles size={16}/></div><b>เริ่มต้นได้ง่าย ๆ</b><p>เพิ่มสินค้าและบันทึกยอดขาย เพื่อดูภาพรวมร้านของคุณ</p><button onClick={() => setSection("inventory")}>จัดการสินค้าของฉัน <ChevronRight size={14}/></button></div><button className="side-settings"><Settings size={17}/> ตั้งค่าร้าน</button><div className="profile-row"><div className="profile-avatar">A</div><div><b>เจ้าของร้าน</b><small>admin@khumflow.app</small></div><button aria-label="ออกจากระบบ" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }); setAuthenticated(false); }}><LogOut size={16}/></button></div></div>
+      <div className="sidebar-bottom"><div className="help-card"><div className="help-icon"><Sparkles size={16}/></div><b>เริ่มต้นได้ง่าย ๆ</b><p>เพิ่มสินค้าและบันทึกยอดขาย เพื่อดูภาพรวมร้านของคุณ</p><button onClick={() => setSection("inventory")}>จัดการสินค้าของฉัน <ChevronRight size={14}/></button></div><button className="side-settings"><Settings size={17}/> ตั้งค่าร้าน</button><div className="profile-row"><div className="profile-avatar">E</div><div><b>เจ้าของร้าน</b><small>EWG</small></div><button aria-label="ออกจากระบบ" onClick={async () => { await fetch("/api/auth/logout", { method: "POST" }); setAuthenticated(false); }}><LogOut size={16}/></button></div></div>
     </aside>
     {mobileOpen && <button className="scrim" onClick={() => setMobileOpen(false)} aria-label="ปิดเมนู"/>}
     <main className="main-area">
-      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)} aria-label="เปิดเมนู"><Menu/></button><div className="breadcrumbs">หน้าหลัก <ChevronRight size={14}/> <b>{navItems.find(n => n.id === section)?.label}</b></div><div className="top-actions"><div className="today-chip"><span/> เปิดร้านวันนี้ <b>09:00–18:00</b></div><button className="icon-btn notification" aria-label="การแจ้งเตือน"><Bell size={18}/><i/></button><div className="top-avatar">A</div></div></header>
+      <header className="topbar"><button className="mobile-menu" onClick={() => setMobileOpen(true)} aria-label="เปิดเมนู"><Menu/></button><div className="breadcrumbs">หน้าหลัก <ChevronRight size={14}/> <b>{navItems.find(n => n.id === section)?.label}</b></div><div className="top-actions"><div className={`storage-status ${storageMode}`}><Database size={13}/>{storageMode === "cloud" ? "บันทึกออนไลน์" : storageMode === "local" ? "เก็บในเครื่อง" : storageMode === "error" ? "ฐานข้อมูลมีปัญหา" : "กำลังเชื่อมข้อมูล"}</div><div className="today-chip"><span/> เปิดร้านวันนี้ <b>09:00–18:00</b></div><button className="icon-btn notification" aria-label="การแจ้งเตือน"><Bell size={18}/><i/></button><div className="top-avatar">E</div></div></header>
       <div className="page-content">
         {section === "overview" && <Overview data={data} sales={todaySales} expenses={todayExpenses} lowStock={lowStock} go={setSection} open={setModal} />}
         {section === "inventory" && <Inventory products={filteredProducts} search={search} setSearch={setSearch} open={() => setModal("product")} />}
         {section === "sales" && <Sales data={data} open={() => setModal("sale")} />}
         {section === "finance" && <Finance data={data} sales={todaySales} expenses={todayExpenses} open={() => setModal("expense")} />}
-        <footer className="app-footer"><span>© 2025 KhumFlow</span><span>ระบบจัดการร้านค้าสำหรับเจ้าของร้าน <CircleHelp size={13}/></span></footer>
+        <footer className="app-footer"><span>© 2026 EWG</span><span>ระบบจัดการร้านค้าสำหรับเจ้าของร้าน <CircleHelp size={13}/></span></footer>
       </div>
     </main>
-    {modal && <EntryModal type={modal} products={data.products} close={() => setModal(null)} saveProduct={p => setAndNotify({ ...data, products: [p, ...data.products] }, "เพิ่มสินค้าเรียบร้อยแล้ว")} saveSale={s => setAndNotify({ ...data, sales: [s, ...data.sales], products: data.products.map(p => p.id === s.productId && p.stock >= s.qty ? { ...p, stock: p.stock - s.qty } : p) }, "บันทึกยอดขายเรียบร้อยแล้ว")} saveExpense={e => setAndNotify({ ...data, expenses: [e, ...data.expenses] }, "บันทึกรายจ่ายเรียบร้อยแล้ว")} />}
+    {modal && <EntryModal type={modal} products={data.products} storageMode={storageMode} close={() => setModal(null)} saveProduct={p => setAndNotify({ ...data, products: [p, ...data.products] }, "เพิ่มสินค้าเรียบร้อยแล้ว")} saveSale={s => setAndNotify({ ...data, sales: [s, ...data.sales], products: data.products.map(p => p.id === s.productId && p.stock >= s.qty ? { ...p, stock: p.stock - s.qty } : p) }, "บันทึกยอดขายเรียบร้อยแล้ว")} saveExpense={e => setAndNotify({ ...data, expenses: [e, ...data.expenses] }, "บันทึกรายจ่ายเรียบร้อยแล้ว")} />}
     {toast && <div className="toast"><span>✓</span>{toast}</div>}
   </div>;
 }
 
 function Login({ onLogin }: { onLogin: () => void }) {
-  const [email, setEmail] = useState("admin@khumflow.app"); const [password, setPassword] = useState("admin1234"); const [show, setShow] = useState(false); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
+  const [email, setEmail] = useState("admin@ewg.app"); const [password, setPassword] = useState(""); const [show, setShow] = useState(false); const [error, setError] = useState(""); const [busy, setBusy] = useState(false);
   async function submit(e: React.FormEvent) { e.preventDefault(); setBusy(true); setError(""); try { const res = await fetch("/api/auth/login", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email, password }) }); const json = await res.json(); if (!res.ok) throw new Error(json.error || "เข้าสู่ระบบไม่สำเร็จ"); onLogin(); } catch (err) { setError(err instanceof Error ? err.message : "เชื่อมต่อระบบไม่ได้"); } finally { setBusy(false); } }
-  return <main className="login-screen"><div className="login-wrap"><div className="login-heading"><div className="brand-mark"><Leaf size={25}/></div><h1>KhumFlow</h1><p>ระบบบริหารจัดการต้นทุนและสต็อกร้านอาหาร</p></div><div className="login-card"><div className="login-tabs"><button className="selected"><ArrowRightIcon/> เข้าสู่ระบบ</button><button disabled><Plus size={15}/> สมัครร้านใหม่</button></div><form onSubmit={submit}><label>อีเมล</label><input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="your@email.com"/><div className="password-label"><label>รหัสผ่าน</label><button type="button" onClick={() => setError("สามารถเปลี่ยนรหัสผ่านได้จากตัวแปร OWNER_PASSWORD ในไฟล์ .env.local")}>ลืมรหัสผ่าน?</button></div><div className="password-input"><input type={show ? "text" : "password"} required value={password} onChange={e => setPassword(e.target.value)} placeholder="รหัสผ่าน"/><button type="button" onClick={() => setShow(!show)} aria-label="แสดงรหัสผ่าน">{show ? <EyeOff size={17}/> : <Eye size={17}/>}</button></div>{error && <p className="login-error">{error}</p>}<button className="login-submit" disabled={busy}>{busy ? "กำลังเข้าสู่ระบบ…" : "เข้าสู่ระบบ"}</button></form><div className="or-divider"><span>หรือ</span></div><button className="google-button" disabled><GoogleMark/>เข้าสู่ระบบด้วย Google</button><div className="demo-box"><p>บัญชีเจ้าของร้านสำหรับทดลองใช้งาน</p><div className="demo-credentials"><span>อีเมล</span><b>admin@khumflow.app</b><span>รหัสผ่าน</span><b>admin1234</b></div><small>เปลี่ยนข้อมูลบัญชีได้ด้วยตัวแปร OWNER_EMAIL และ OWNER_PASSWORD</small></div></div><p className="login-foot">KhumFlow · ดูแลร้านของคุณให้ง่ายขึ้นทุกวัน</p></div></main>;
+  return <main className="login-screen"><div className="login-wrap"><div className="login-heading"><div className="brand-mark"><Leaf size={25}/></div><h1>EWG</h1><p>ระบบจัดการสินค้า สต็อก และรายรับรายจ่าย</p></div><div className="login-card"><div className="login-tabs"><button className="selected"><ArrowRightIcon/> เข้าสู่ระบบ</button><button disabled><Plus size={15}/> สมัครร้านใหม่</button></div><form onSubmit={submit}><label>อีเมล</label><input type="email" required value={email} onChange={e => setEmail(e.target.value)} placeholder="อีเมลเจ้าของร้าน"/><div className="password-label"><label>รหัสผ่าน</label><button type="button" onClick={() => setError("เปลี่ยนรหัสผ่านได้ที่ตัวแปร OWNER_PASSWORD ใน Vercel")}>ลืมรหัสผ่าน?</button></div><div className="password-input"><input type={show ? "text" : "password"} required value={password} onChange={e => setPassword(e.target.value)} placeholder="รหัสผ่าน"/><button type="button" onClick={() => setShow(!show)} aria-label="แสดงรหัสผ่าน">{show ? <EyeOff size={17}/> : <Eye size={17}/>}</button></div>{error && <p className="login-error">{error}</p>}<button className="login-submit" disabled={busy}>{busy ? "กำลังเข้าสู่ระบบ…" : "เข้าสู่ระบบ"}</button></form><div className="or-divider"><span>หรือ</span></div><button className="google-button" disabled><GoogleMark/>เข้าสู่ระบบด้วย Google</button><div className="demo-box"><p>บัญชีเจ้าของร้าน EWG</p><small>ใช้ email และ password ที่ตั้งไว้ใน Environment Variables ของ Vercel</small></div></div><p className="login-foot">EWG · ระบบจัดการร้านค้าสำหรับเจ้าของร้าน</p></div></main>;
 }
 function ArrowRightIcon() { return <span className="arrow-login">↳</span>; }
 function GoogleMark() { return <b className="google-mark">G</b>; }
@@ -118,15 +190,15 @@ function Finance({ data, sales, expenses, open }: { data: StoreData; sales: numb
 function RecentSales({ data }: { data: Sale[] }) { if(!data.length) return <div className="empty-state"><ShoppingCart size={30}/><b>ยังไม่มีรายการขาย</b><span>เริ่มบันทึกยอดขายเพื่อดูข้อมูลที่นี่</span></div>; return <div className="table-scroll"><table><thead><tr><th>รายการ</th><th>วันที่ / เวลา</th><th>จำนวน</th><th>ยอดรวม</th><th>สถานะ</th></tr></thead><tbody>{data.map(s=><tr key={s.id}><td><div className="table-product"><span className="sale-row-icon"><Coffee size={16}/></span><b>{s.product}</b></div></td><td className="subtle">{new Date(s.date).toLocaleString("th-TH",{day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"})}</td><td>{s.qty} รายการ</td><td><b>฿{money(s.total)}</b></td><td><span className="status-chip status-good"><i/> สำเร็จ</span></td></tr>)}</tbody></table></div>; }
 function ProductThumb({ product }: { product: Product }) { return <span className={`product-thumb ${product.color}`} style={product.image?{backgroundImage:`url(${product.image})`}:undefined}>{!product.image&&<Package size={19}/>}</span>; }
 
-function EntryModal({ type, products, close, saveProduct, saveSale, saveExpense }: { type: "product"|"sale"|"expense"; products: Product[]; close:()=>void; saveProduct:(p:Product)=>void; saveSale:(s:Sale)=>void; saveExpense:(e:Expense)=>void }) {
-  const [name,setName]=useState(""); const [category,setCategory]=useState("วัตถุดิบ"); const [price,setPrice]=useState(""); const [cost,setCost]=useState(""); const [stock,setStock]=useState(""); const [qty,setQty]=useState("1"); const [amount,setAmount]=useState(""); const [image,setImage]=useState(""); const [selected,setSelected]=useState(products[0]?.id||""); const [unit,setUnit]=useState("ชิ้น"); const [message,setMessage]=useState("");
+function EntryModal({ type, products, storageMode, close, saveProduct, saveSale, saveExpense }: { type: "product"|"sale"|"expense"; products: Product[]; storageMode: StorageMode; close:()=>void; saveProduct:(p:Product)=>void; saveSale:(s:Sale)=>void; saveExpense:(e:Expense)=>void }) {
+  const [name,setName]=useState(""); const [category,setCategory]=useState("วัตถุดิบ"); const [price,setPrice]=useState(""); const [cost,setCost]=useState(""); const [stock,setStock]=useState(""); const [qty,setQty]=useState("1"); const [amount,setAmount]=useState(""); const [image,setImage]=useState(""); const [selected,setSelected]=useState(products[0]?.id||""); const [unit,setUnit]=useState("ชิ้น"); const [message,setMessage]=useState(""); const [busy,setBusy]=useState(false);
   const title=type==="product"?"เพิ่มสินค้าใหม่":type==="sale"?"บันทึกการขาย":"เพิ่มรายจ่าย";
   function imagePick(e:React.ChangeEvent<HTMLInputElement>) { const f=e.target.files?.[0]; if(!f)return; if(f.size>900_000){setMessage("รูปมีขนาดเกิน 900 KB กรุณาเลือกรูปที่เล็กลง");return;} const reader=new FileReader(); reader.onload=()=>setImage(String(reader.result)); reader.readAsDataURL(f); }
-  function submit(e:React.FormEvent) { e.preventDefault(); setMessage(""); if(type==="product"){saveProduct({id:crypto.randomUUID(),name,category,price:Number(price),cost:Number(cost),stock:Number(stock),unit,image:image||undefined,color:"mint"});return;} if(type==="sale"){const product=products.find(p=>p.id===selected);if(!product)return;if(Number(qty)>product.stock){setMessage(`สต็อกคงเหลือ ${product.stock} ${product.unit}`);return;}saveSale({id:crypto.randomUUID(),product:product.name,productId:selected,qty:Number(qty),total:product.price*Number(qty),date:new Date().toISOString()});return;}saveExpense({id:crypto.randomUUID(),name,amount:Number(amount),date:new Date().toISOString()}); }
+  async function submit(e:React.FormEvent) { e.preventDefault(); setMessage(""); setBusy(true); try { if(type==="product"){let imageUrl=image||undefined;if(storageMode==="cloud"&&image.startsWith("data:image/")){const blob=await (await fetch(image)).blob();const form=new FormData();form.append("file",new File([blob],"product-image",{type:blob.type}));const response=await fetch("/api/store/image",{method:"POST",body:form});const result=await response.json();if(!response.ok)throw new Error(result.error||"อัปโหลดรูปไม่สำเร็จ");imageUrl=result.url;}saveProduct({id:crypto.randomUUID(),name,category,price:Number(price),cost:Number(cost),stock:Number(stock),unit,image:imageUrl,color:"mint"});return;} if(type==="sale"){const product=products.find(p=>p.id===selected);if(!product)return;if(Number(qty)>product.stock){setMessage(`สต็อกคงเหลือ ${product.stock} ${product.unit}`);return;}saveSale({id:crypto.randomUUID(),product:product.name,productId:selected,qty:Number(qty),total:product.price*Number(qty),date:new Date().toISOString()});return;}saveExpense({id:crypto.randomUUID(),name,amount:Number(amount),date:new Date().toISOString()});}catch(error){setMessage(error instanceof Error?error.message:"บันทึกข้อมูลไม่สำเร็จ");}finally{setBusy(false);} }
   return <div className="modal-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)close();}}><div className="modal"><div className="modal-head"><div><h2>{title}</h2><p>{type==="product"?"เพิ่มข้อมูลสินค้าและจำนวนสต็อก":"กรอกข้อมูลเพื่อบันทึกลงในระบบ"}</p></div><button className="icon-btn" onClick={close}><X size={19}/></button></div><form onSubmit={submit}>
-    {type==="product"&&<><label>ชื่อสินค้า<input required value={name} onChange={e=>setName(e.target.value)} placeholder="เช่น เมล็ดกาแฟคั่วกลาง"/></label><div className="form-pair"><label>หมวดหมู่<select value={category} onChange={e=>setCategory(e.target.value)}><option>วัตถุดิบ</option><option>สินค้า</option><option>บรรจุภัณฑ์</option><option>อื่น ๆ</option></select></label><label>หน่วยนับ<input required value={unit} onChange={e=>setUnit(e.target.value)} placeholder="ชิ้น / ถุง / ขวด"/></label></div><div className="form-pair"><label>ราคาขาย (บาท)<input type="number" min="0" required value={price} onChange={e=>setPrice(e.target.value)} placeholder="0"/></label><label>ต้นทุน (บาท)<input type="number" min="0" required value={cost} onChange={e=>setCost(e.target.value)} placeholder="0"/></label></div><label>จำนวนในสต็อก<input type="number" min="0" required value={stock} onChange={e=>setStock(e.target.value)} placeholder="0"/></label><label className="upload-label">รูปสินค้า <small>(เลือกภาพ JPG, PNG หรือ WebP ขนาดไม่เกิน 900 KB)</small><span className="upload-box">{image?<img src={image} alt="ตัวอย่างสินค้า"/>:<><FileImage size={21}/><span>คลิกเพื่อเลือกรูปภาพ</span><small>บันทึกไว้ในเบราว์เซอร์ของอุปกรณ์นี้</small></>}</span><input className="file-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={imagePick}/></label></>}
+    {type==="product"&&<><label>ชื่อสินค้า<input required value={name} onChange={e=>setName(e.target.value)} placeholder="เช่น เมล็ดกาแฟคั่วกลาง"/></label><div className="form-pair"><label>หมวดหมู่<select value={category} onChange={e=>setCategory(e.target.value)}><option>วัตถุดิบ</option><option>สินค้า</option><option>บรรจุภัณฑ์</option><option>อื่น ๆ</option></select></label><label>หน่วยนับ<input required value={unit} onChange={e=>setUnit(e.target.value)} placeholder="ชิ้น / ถุง / ขวด"/></label></div><div className="form-pair"><label>ราคาขาย (บาท)<input type="number" min="0" required value={price} onChange={e=>setPrice(e.target.value)} placeholder="0"/></label><label>ต้นทุน (บาท)<input type="number" min="0" required value={cost} onChange={e=>setCost(e.target.value)} placeholder="0"/></label></div><label>จำนวนในสต็อก<input type="number" min="0" required value={stock} onChange={e=>setStock(e.target.value)} placeholder="0"/></label><label className="upload-label">รูปสินค้า <small>(เลือกภาพ JPG, PNG หรือ WebP ขนาดไม่เกิน 900 KB)</small><span className="upload-box">{image?<img src={image} alt="ตัวอย่างสินค้า"/>:<><FileImage size={21}/><span>คลิกเพื่อเลือกรูปภาพ</span><small>{storageMode==="cloud"?"รูปจะบันทึกออนไลน์":"รูปจะเก็บในเบราว์เซอร์นี้"}</small></>}</span><input className="file-input" type="file" accept="image/png,image/jpeg,image/webp" onChange={imagePick}/></label></>}
     {type==="sale"&&<><label>สินค้า<select required value={selected} onChange={e=>setSelected(e.target.value)}>{products.map(p=><option key={p.id} value={p.id}>{p.name} · ฿{money(p.price)} / {p.unit} (เหลือ {p.stock})</option>)}</select></label><label>จำนวนที่ขาย<input type="number" min="1" required value={qty} onChange={e=>setQty(e.target.value)}/></label><div className="sale-total"><span>ยอดรวม</span><b>฿{money((products.find(p=>p.id===selected)?.price||0)*Number(qty||0))}</b></div></>}
     {type==="expense"&&<><label>รายการค่าใช้จ่าย<input required value={name} onChange={e=>setName(e.target.value)} placeholder="เช่น ค่าน้ำแข็ง"/></label><label>จำนวนเงิน (บาท)<input type="number" min="1" required value={amount} onChange={e=>setAmount(e.target.value)} placeholder="0"/></label></>}
-    {message&&<p className="form-error">{message}</p>}<div className="modal-actions"><button type="button" className="outline-button" onClick={close}>ยกเลิก</button><button className="primary-button"><Plus size={16}/>{type==="product"?"เพิ่มสินค้า":type==="sale"?"บันทึกการขาย":"บันทึกรายจ่าย"}</button></div>
+    {message&&<p className="form-error">{message}</p>}<div className="modal-actions"><button type="button" className="outline-button" onClick={close}>ยกเลิก</button><button className="primary-button" disabled={busy}><Plus size={16}/>{busy?"กำลังบันทึก…":type==="product"?"เพิ่มสินค้า":type==="sale"?"บันทึกการขาย":"บันทึกรายจ่าย"}</button></div>
   </form></div></div>;
 }

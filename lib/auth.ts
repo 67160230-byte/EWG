@@ -1,12 +1,12 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
 function secret() {
-  return process.env.SESSION_SECRET || `local-demo:${process.env.OWNER_PASSWORD || "admin1234"}`;
+  return process.env.SESSION_SECRET || `ewg-local-demo:${process.env.OWNER_PASSWORD || "change-this-password"}`;
 }
 
 export function createSessionToken() {
   const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000;
-  const payload = Buffer.from(JSON.stringify({ sub: process.env.OWNER_EMAIL || "admin@khumflow.app", exp: expiresAt })).toString("base64url");
+  const payload = Buffer.from(JSON.stringify({ sub: process.env.OWNER_EMAIL || "admin@ewg.app", exp: expiresAt })).toString("base64url");
   const signature = createHmac("sha256", secret()).update(payload).digest("base64url");
   return `${payload}.${signature}`;
 }
@@ -21,6 +21,6 @@ export function isValidSession(token?: string) {
   if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) return false;
   try {
     const session = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as { sub?: string; exp?: number };
-    return session.sub === (process.env.OWNER_EMAIL || "admin@khumflow.app") && typeof session.exp === "number" && session.exp > Date.now();
+    return session.sub === (process.env.OWNER_EMAIL || "admin@ewg.app") && typeof session.exp === "number" && session.exp > Date.now();
   } catch { return false; }
 }
