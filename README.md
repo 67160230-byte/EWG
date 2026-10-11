@@ -1,4 +1,4 @@
-# EWG Store
+# EWG Fashion Store
 
 เว็บจัดการร้านสำหรับเจ้าของร้านหนึ่งบัญชี มี dashboard, สินค้า/สต็อก, บันทึกการขาย, รายรับ–รายจ่าย และอัปโหลดรูปสินค้า
 
@@ -41,3 +41,7 @@
 - ถ้ายังไม่ได้ตั้งค่า Supabase ตัวอย่างจะเก็บข้อมูลไว้ใน localStorage ของ browser เครื่องนั้นเท่านั้น
 - เมื่อเชื่อม cloud ครั้งแรก แอปจะพยายามย้ายข้อมูลเดิมจาก localStorage และอัปโหลดรูป base64 ไป Storage
 - Free tier มีโควตาและข้อกำหนดที่เปลี่ยนแปลงได้: ตรวจสอบ [Supabase billing](https://supabase.com/docs/guides/platform/billing-on-supabase) และ [free project pausing](https://supabase.com/docs/guides/platform/free-project-pausing)
+
+## บัญชีทดลอง
+
+หน้า login มีปุ่มบัญชีทดลองที่กรอก `demo@ewg.app` และ `ewg-demo-2026` อัตโนมัติ จากนั้นกดเข้าสู่ระบบได้ทันที โหมดทดลองทำงานใน browser และบันทึกด้วย localStorage key แยกจากบัญชีเจ้าของร้าน ไม่มีการออก session ฝั่ง server และไม่สามารถเรียก API ข้อมูลร้านจริงได้ สามารถกดเริ่มใหม่บนแถบโหมดทดลองเพื่อล้างข้อมูลทดลอง รูปสินค้าตัวอย่างและโลโก้ SVG อยู่ใน `public/` และไม่ต้องใช้บริการรูปภายนอก

@@ -3,7 +3,8 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "EWG — จัดการร้านง่ายในที่เดียว",
-  description: "ระบบจัดการสินค้า สต็อก และรายรับรายจ่ายสำหรับร้านค้าขนาดเล็ก",
+  description: "ระบบจัดการร้านเสื้อผ้า สต็อกสินค้า และรายรับรายจ่าย",
+  icons: { icon: "/logo.svg" },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
